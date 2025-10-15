@@ -1,5 +1,55 @@
 {
   "version": 2,
+  "rewrites": [
+    {
+      "source": "/stats",
+      "destination": "/api/stats"
+    },
+    {
+      "source": "/active",
+      "destination": "/api/active"
+    },
+    {
+      "source": "/resolved",
+      "destination": "/api/resolved"
+    },
+    {
+      "source": "/multi-outcome",
+      "destination": "/api/multi-outcome"
+    },
+    {
+      "source": "/top-active",
+      "destination": "/api/top-active"
+    },
+    {
+      "source": "/top-resolved",
+      "destination": "/api/top-resolved"
+    },
+    {
+      "source": "/export",
+      "destination": "/api/export"
+    },
+    {
+      "source": "/update",
+      "destination": "/api/update"
+    },
+    {
+      "source": "/events",
+      "destination": "/api/events"
+    },
+    {
+      "source": "/winners",
+      "destination": "/api/winners"
+    },
+    {
+      "source": "/winner-stats",
+      "destination": "/api/winner-stats"
+    },
+    {
+      "source": "/track-winners",
+      "destination": "/api/track-winners"
+    }
+  ],
   "env": {
     "NODE_ENV": "production"
   }
