@@ -622,6 +622,7 @@
         // Auto-refresh every 5 minutes with synchronized countdown (all users see same countdown)
         let nextUpdateTime = null;
         let countdownInterval = null;
+        let isRefreshing = false;
         
         function startAutoRefresh() {
             // Calculate next synchronized 5-minute interval (:00, :05, :10, :15, etc.)
@@ -656,12 +657,13 @@
             const timeLeft = nextUpdateTime - now;
             
             if (timeLeft <= 0) {
-                document.getElementById('countdownTimer').textContent = '⏰ Updating now...';
-                // Trigger refresh
-                loadStats();
-                loadMarkets();
-                // Restart the cycle
-                startAutoRefresh();
+                if (!isRefreshing) {
+                    isRefreshing = true;
+                    document.getElementById('countdownTimer').textContent = '⏰ Updating now...';
+                    
+                    // Perform refresh asynchronously to avoid blocking
+                    performScheduledRefresh();
+                }
                 return;
             }
             
@@ -670,6 +672,30 @@
             
             document.getElementById('countdownTimer').textContent = 
                 `⏰ Next update in: ${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        }
+        
+        async function performScheduledRefresh() {
+            try {
+                // Perform both operations in parallel for better performance
+                await Promise.all([
+                    loadStats(),
+                    loadMarkets()
+                ]);
+                
+                // Wait a moment to show the "Updating now..." message
+                setTimeout(() => {
+                    isRefreshing = false;
+                    startAutoRefresh();
+                }, 1000);
+                
+            } catch (error) {
+                console.error('Error during scheduled refresh:', error);
+                // Reset the refresh lock and restart even if there was an error
+                setTimeout(() => {
+                    isRefreshing = false;
+                    startAutoRefresh();
+                }, 2000);
+            }
         }
         
         // Update countdown every second
