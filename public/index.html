@@ -130,6 +130,7 @@
     <div class="header">
         <h1>🎯 Polymarket Live Tracker</h1>
         <p class="update-time" id="lastUpdate">Loading...</p>
+        <p class="countdown-time" id="countdownTimer" style="color: #28a745; font-weight: bold; margin-top: 5px;">⏰ Next update in: --:--</p>
     </div>
 
     <div class="stats" id="stats">
@@ -241,6 +242,9 @@
                 if (stats.lastUpdate) {
                     document.getElementById('lastUpdate').textContent = 
                         `Last updated: ${new Date(stats.lastUpdate).toLocaleString()}`;
+                } else {
+                    document.getElementById('lastUpdate').textContent = 
+                        `Last updated: ${new Date().toLocaleString()}`;
                 }
             } catch (error) {
                 console.error('Error loading stats:', error);
@@ -248,18 +252,30 @@
         }
 
         async function loadMarkets() {
-            const limit = document.getElementById('limitSelect').value;
+            const limitSelect = document.getElementById('limitSelect');
+            const limit = limitSelect ? limitSelect.value : 50;
             
             try {
+                console.log('Fetching events...');
                 const response = await fetch(`/active?limit=${limit}`);
                 const data = await response.json();
-                allMarkets = data.events || [];
+                console.log('API Response:', data);
                 
-                displayMarkets(sortedEvents());
+                allMarkets = data.events || [];
+                console.log('Events loaded:', allMarkets.length);
+                
+                if (allMarkets.length === 0) {
+                    document.getElementById('marketsTable').innerHTML = 
+                        '<tr><td colspan="2" class="loading">No events found</td></tr>';
+                    return;
+                }
+                
+                // Display markets sorted by volume by default
+                displayMarkets(sortEvents(allMarkets));
             } catch (error) {
                 console.error('Error loading events:', error);
                 document.getElementById('marketsTable').innerHTML = 
-                    '<tr><td colspan="3" class="loading">Error loading events</td></tr>';
+                    '<tr><td colspan="2" class="loading">Error loading events: ' + error.message + '</td></tr>';
             }
         }
 
@@ -297,13 +313,38 @@
                     return bVolume - aVolume;
                 });
                 const marketsHtml = sortedMarkets.map(market => {
-                    const outcomes = market.outcomes || [];
+                    let outcomes = [];
+                    try {
+                        outcomes = market.outcomes ? JSON.parse(market.outcomes) : [];
+                    } catch (e) {
+                        outcomes = Array.isArray(market.outcomes) ? market.outcomes : [];
+                    }
                     const outcomesText = outcomes.length > 0 ? 
-                        outcomes.map(o => o.outcome || 'Unknown').join(', ') : 
+                        outcomes.join(', ') : 
                         (market.outcomesCount > 0 ? `${market.outcomesCount} outcomes` : 'Binary');
                     
                     const marketVolume = market.volumeUSD || market.volume || 0;
-                    const isResolved = market.status === 'resolved';
+                    const isResolved = market.active === false || market.closed === true;
+                    
+                    // Determine winning outcome
+                    let winningOutcome = market.winningOutcome;
+                    if (isResolved && !winningOutcome && market.outcomePrices) {
+                        try {
+                            const prices = JSON.parse(market.outcomePrices);
+                            if (Array.isArray(prices) && prices.length > 0) {
+                                // Find the outcome with the highest price (closest to 1.0)
+                                const maxPriceIndex = prices.indexOf(Math.max(...prices.map(p => parseFloat(p))));
+                                if (maxPriceIndex >= 0 && outcomes.length > maxPriceIndex) {
+                                    winningOutcome = outcomes[maxPriceIndex];
+                                } else if (prices.length === 2) {
+                                    // For binary markets, use Yes/No
+                                    winningOutcome = parseFloat(prices[0]) > parseFloat(prices[1]) ? 'Yes' : 'No';
+                                }
+                            }
+                        } catch (e) {
+                            // Ignore parsing errors
+                        }
+                    }
                     
                     let volumeColor, backgroundColor, statusText;
                     if (isResolved) {
@@ -315,12 +356,6 @@
                         backgroundColor = '#f8f9fa';
                         statusText = '';
                     }
-                    
-                    // Generate winning outcome display for resolved markets
-                    const winningOutcomeDisplay = isResolved && market.winningOutcome ? 
-                        `<div style="margin-top: 4px; padding: 4px 8px; background: #28a745; color: white; border-radius: 12px; font-size: 11px; font-weight: bold; display: inline-block;">
-                            🏆 Winner: ${market.winningOutcome}
-                        </div>` : '';
 
                     return `
                         <div style="margin: 6px 0; padding: 8px; border-left: 4px solid ${volumeColor}; background: ${backgroundColor}; border-radius: 4px;">
@@ -330,9 +365,12 @@
                             </div>
                             <div style="font-size: 10px; color: #6c757d; margin-top: 4px; font-family: monospace; display: flex; align-items: center; gap: 8px;">
                                 <span>Market ID: ${market.id || market.conditionId || 'N/A'}</span>
-                                ${isResolved && market.winningOutcome ? 
+                                ${isResolved && winningOutcome ? 
                                     `<div style="padding: 2px 6px; background: #28a745; color: white; border-radius: 8px; font-size: 9px; font-weight: bold;">
-                                        🏆 Winner: ${market.winningOutcome}
+                                        🏆 Winner: ${winningOutcome}
+                                    </div>` : isResolved ? 
+                                    `<div style="padding: 2px 6px; background: #6c757d; color: white; border-radius: 8px; font-size: 9px; font-weight: bold;">
+                                        ✅ RESOLVED
                                     </div>` : ''}
                             </div>
                         </div>
@@ -347,8 +385,8 @@
                         <td>
                             <div class="market-name">
                                 ${event.title}
-                                ${event.polymarketURL ? 
-                                    `<a href="${event.polymarketURL}" target="_blank" style="margin-left: 8px; color: #0066cc; text-decoration: none;" title="Open in Polymarket">
+                                ${event.slug ? 
+                                    `<a href="https://polymarket.com/event/${event.slug}" target="_blank" style="margin-left: 8px; color: #0066cc; text-decoration: none;" title="Open in Polymarket">
                                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                             <path d="M14 3V5H17.59L7.76 14.83L9.17 16.24L19 6.41V10H21V3M19 19H5V5H12V3H5C3.9 3 3 3.9 3 5V19C3 20.1 3.9 21 5 21H19C20.1 21 21 20.1 21 19V12H19V19Z" fill="#0066cc"/>
                                         </svg>
@@ -445,7 +483,7 @@
             const searchTerm = document.getElementById('searchInput').value.toLowerCase();
             
             if (!searchTerm) {
-                displayMarkets(sortedEvents());
+                displayMarkets(sortEvents(allMarkets));
                 return;
             }
             
@@ -458,7 +496,8 @@
         }
 
         function sortEvents(eventsToSort = allMarkets) {
-            const sortBy = document.getElementById('sortSelect').value;
+            const sortSelect = document.getElementById('sortSelect');
+            const sortBy = sortSelect ? sortSelect.value : 'volume';
             const sorted = [...eventsToSort];
             
             if (sortBy === 'volume') {
@@ -480,9 +519,6 @@
             return sorted;
         }
 
-        function sortedEvents() {
-            return sortEvents(allMarkets);
-        }
 
         async function triggerUpdate() {
             try {
@@ -543,7 +579,7 @@
                             showRealtimeNotification(`Market resolved: ${data.market.question}`);
                             
                             // Refresh display immediately
-                            displayMarkets(sortedEvents());
+                            displayMarkets(sortEvents(allMarkets));
                             loadStats();
                             updateCountdowns();
                             break;
@@ -583,11 +619,41 @@
             }, 5000);
         }
 
-        // Auto-refresh every 5 minutes
-        setInterval(() => {
-            loadStats();
-            loadMarkets();
-        }, 5 * 60 * 1000);
+        // Auto-refresh every 5 minutes with countdown
+        let nextUpdateTime = null;
+        let countdownInterval = null;
+        
+        function startAutoRefresh() {
+            // Set next update time to 30 minutes from now
+            nextUpdateTime = new Date(Date.now() + 5 * 60 * 1000);
+            updateCountdownDisplay();
+        }
+        
+        function updateCountdownDisplay() {
+            if (!nextUpdateTime) return;
+            
+            const now = new Date();
+            const timeLeft = nextUpdateTime - now;
+            
+            if (timeLeft <= 0) {
+                document.getElementById('countdownTimer').textContent = '⏰ Updating now...';
+                // Trigger refresh
+                loadStats();
+                loadMarkets();
+                // Restart the cycle
+                startAutoRefresh();
+                return;
+            }
+            
+            const minutes = Math.floor(timeLeft / (1000 * 60));
+            const seconds = Math.floor((timeLeft % (1000 * 60)) / 1000);
+            
+            document.getElementById('countdownTimer').textContent = 
+                `⏰ Next update in: ${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        }
+        
+        // Update countdown every second
+        setInterval(updateCountdownDisplay, 1000);
 
         // Winner tracking functionality
         let isWinnerView = false;
@@ -665,7 +731,7 @@
                 if (event.markets && event.markets.length > 0) {
                     idsText += `\n--- ${event.title} ---\n`;
                     event.markets.forEach((market, index) => {
-                        const isResolved = market.status === 'resolved';
+                        const isResolved = market.active === false || market.closed === true;
                         idsText += `${index + 1}. ${market.question}\n`;
                         idsText += `   ID: ${market.id || market.conditionId || 'N/A'}\n`;
                         idsText += `   Status: ${isResolved ? '🏆 RESOLVED' : '⏳ Active'}\n`;
@@ -778,6 +844,7 @@
         // Initial load
         loadStats();
         loadMarkets();
+        startAutoRefresh();
         
         // Connect to real-time updates
         connectToSSE();
