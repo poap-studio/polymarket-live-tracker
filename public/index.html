@@ -619,13 +619,33 @@
             }, 5000);
         }
 
-        // Auto-refresh every 5 minutes with countdown
+        // Auto-refresh every 5 minutes with synchronized countdown (all users see same countdown)
         let nextUpdateTime = null;
         let countdownInterval = null;
         
         function startAutoRefresh() {
-            // Set next update time to 30 minutes from now
-            nextUpdateTime = new Date(Date.now() + 5 * 60 * 1000);
+            // Calculate next synchronized 5-minute interval (:00, :05, :10, :15, etc.)
+            const now = new Date();
+            const currentMinutes = now.getMinutes();
+            const currentSeconds = now.getSeconds();
+            const currentMs = now.getMilliseconds();
+            
+            // Round up to next 5-minute mark
+            const nextInterval = Math.ceil(currentMinutes / 5) * 5;
+            const nextMinutes = nextInterval % 60;
+            const hoursToAdd = nextInterval >= 60 ? 1 : 0;
+            
+            nextUpdateTime = new Date(now);
+            nextUpdateTime.setHours(now.getHours() + hoursToAdd);
+            nextUpdateTime.setMinutes(nextMinutes);
+            nextUpdateTime.setSeconds(0);
+            nextUpdateTime.setMilliseconds(0);
+            
+            // If we're already at the exact minute boundary, move to next interval
+            if (currentSeconds === 0 && currentMs < 100) {
+                nextUpdateTime.setMinutes(nextUpdateTime.getMinutes() + 5);
+            }
+            
             updateCountdownDisplay();
         }
         
