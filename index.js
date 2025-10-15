@@ -1,6 +1,5 @@
 const PolymarketTracker = require('./marketTracker');
 const PolymarketWinnerTracker = require('./winnerTracker');
-const http = require('http');
 const url = require('url');
 const fs = require('fs');
 const path = require('path');
@@ -21,11 +20,10 @@ class PolymarketApp {
         // Skip scheduler in serverless environment
         if (!process.env.VERCEL && process.env.NODE_ENV !== 'production') {
             this.tracker.startScheduler();
+            this.startWebServer();
         } else {
             console.log('Serverless mode - scheduler disabled');
         }
-        
-        this.startWebServer();
         
         process.on('SIGINT', () => {
             console.log('\n📝 Shutting down gracefully...');
@@ -38,6 +36,29 @@ class PolymarketApp {
                 console.log('✅ Goodbye!');
                 process.exit(0);
             }
+        });
+    }
+
+    startWebServer() {
+        const http = require('http');
+        const server = http.createServer((req, res) => this.handleRequest(req, res));
+
+        server.listen(this.port, () => {
+            console.log(`🌐 Web server running on http://localhost:${this.port}`);
+            console.log(`📊 Available endpoints:`);
+            console.log(`   GET /stats - Market statistics`);
+            console.log(`   GET /active?limit=10 - Active markets`);
+            console.log(`   GET /resolved?limit=10 - Resolved markets`);
+            console.log(`   GET /multi-outcome?type=active&limit=10 - Multi-outcome markets`);
+            console.log(`   GET /top-active?limit=10 - Top active markets by volume`);
+            console.log(`   GET /top-resolved?limit=10 - Top resolved markets by volume`);
+            console.log(`   GET /export - Export all data`);
+            console.log(`   GET /update - Manual update trigger`);
+            console.log(`   GET /events - Server-Sent Events for real-time updates`);
+            console.log(`   GET /winners?marketId=123 - Get winners for specific market`);
+            console.log(`   GET /winners?limit=50 - Get top winners across all markets`);
+            console.log(`   GET /winner-stats - Get winner statistics`);
+            console.log(`   GET /track-winners?marketId=123&outcome=YES - Track winners for resolved market`);
         });
     }
 
@@ -64,82 +85,62 @@ class PolymarketApp {
         }
     }
 
-    startWebServer() {
-        const server = http.createServer((req, res) => {
-            const parsedUrl = url.parse(req.url, true);
-            const path = parsedUrl.pathname;
+    async handleRequest(req, res) {
+        const parsedUrl = url.parse(req.url, true);
+        const path = parsedUrl.pathname;
 
-            res.setHeader('Content-Type', 'application/json');
-            res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Access-Control-Allow-Origin', '*');
 
-            try {
-                switch (path) {
-                    case '/':
-                        this.serveStaticFile(res, 'public/index.html');
-                        break;
-                    case '/stats':
-                        this.handleStats(res);
-                        break;
-                    case '/active':
-                        this.handleActiveEvents(res, parsedUrl.query);
-                        break;
-                    case '/resolved':
-                        this.handleResolvedMarkets(res, parsedUrl.query);
-                        break;
-                    case '/multi-outcome':
-                        this.handleMultiOutcomeMarkets(res, parsedUrl.query);
-                        break;
-                    case '/top-active':
-                        this.handleTopActive(res, parsedUrl.query);
-                        break;
-                    case '/top-resolved':
-                        this.handleTopResolved(res, parsedUrl.query);
-                        break;
-                    case '/export':
-                        this.handleExport(res);
-                        break;
-                    case '/update':
-                        this.handleManualUpdate(res);
-                        break;
-                    case '/events':
-                        this.handleSSE(req, res);
-                        break;
-                    case '/winners':
-                        this.handleWinners(res, parsedUrl.query);
-                        break;
-                    case '/winner-stats':
-                        this.handleWinnerStats(res);
-                        break;
-                    case '/track-winners':
-                        this.handleTrackWinners(res, parsedUrl.query);
-                        break;
-                    default:
-                        res.statusCode = 404;
-                        res.end(JSON.stringify({ error: 'Not found' }));
-                }
-            } catch (error) {
-                res.statusCode = 500;
-                res.end(JSON.stringify({ error: error.message }));
+        try {
+            switch (path) {
+                case '/':
+                    this.serveStaticFile(res, 'public/index.html');
+                    break;
+                case '/stats':
+                    this.handleStats(res);
+                    break;
+                case '/active':
+                    this.handleActiveEvents(res, parsedUrl.query);
+                    break;
+                case '/resolved':
+                    this.handleResolvedMarkets(res, parsedUrl.query);
+                    break;
+                case '/multi-outcome':
+                    this.handleMultiOutcomeMarkets(res, parsedUrl.query);
+                    break;
+                case '/top-active':
+                    this.handleTopActive(res, parsedUrl.query);
+                    break;
+                case '/top-resolved':
+                    this.handleTopResolved(res, parsedUrl.query);
+                    break;
+                case '/export':
+                    await this.handleExport(res);
+                    break;
+                case '/update':
+                    await this.handleManualUpdate(res);
+                    break;
+                case '/events':
+                    this.handleSSE(req, res);
+                    break;
+                case '/winners':
+                    this.handleWinners(res, parsedUrl.query);
+                    break;
+                case '/winner-stats':
+                    await this.handleWinnerStats(res);
+                    break;
+                case '/track-winners':
+                    await this.handleTrackWinners(res, parsedUrl.query);
+                    break;
+                default:
+                    res.statusCode = 404;
+                    res.end(JSON.stringify({ error: 'Not found' }));
             }
-        });
-
-        server.listen(this.port, () => {
-            console.log(`🌐 Web server running on http://localhost:${this.port}`);
-            console.log(`📊 Available endpoints:`);
-            console.log(`   GET /stats - Market statistics`);
-            console.log(`   GET /active?limit=10 - Active markets`);
-            console.log(`   GET /resolved?limit=10 - Resolved markets`);
-            console.log(`   GET /multi-outcome?type=active&limit=10 - Multi-outcome markets`);
-            console.log(`   GET /top-active?limit=10 - Top active markets by volume`);
-            console.log(`   GET /top-resolved?limit=10 - Top resolved markets by volume`);
-            console.log(`   GET /export - Export all data`);
-            console.log(`   GET /update - Manual update trigger`);
-            console.log(`   GET /events - Server-Sent Events for real-time updates`);
-            console.log(`   GET /winners?marketId=123 - Get winners for specific market`);
-            console.log(`   GET /winners?limit=50 - Get top winners across all markets`);
-            console.log(`   GET /winner-stats - Get winner statistics`);
-            console.log(`   GET /track-winners?marketId=123&outcome=YES - Track winners for resolved market`);
-        });
+        } catch (error) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({ error: error.message }));
+        }
     }
 
     serveStaticFile(res, filePath) {
@@ -430,9 +431,34 @@ class PolymarketApp {
     }
 }
 
+// Global app instance for serverless functions
+let globalApp = null;
+
+async function getApp() {
+    if (!globalApp) {
+        globalApp = new PolymarketApp();
+        await globalApp.start();
+    }
+    return globalApp;
+}
+
+// Serverless function handler for Vercel
+module.exports = async (req, res) => {
+    try {
+        const app = await getApp();
+        await app.handleRequest(req, res);
+    } catch (error) {
+        console.error('Serverless handler error:', error);
+        res.statusCode = 500;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'Internal server error' }));
+    }
+};
+
+// For local development
 if (require.main === module) {
     const app = new PolymarketApp();
     app.start().catch(console.error);
 }
 
-module.exports = PolymarketApp;
+module.exports.PolymarketApp = PolymarketApp;
