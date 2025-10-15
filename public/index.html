@@ -409,9 +409,9 @@
                             ${event.endDate ? `<div class="countdown" data-end-date="${event.endDate}" style="margin-top: 6px;">Loading...</div>` : ''}
                         </td>
                         <td>
-                            <strong>${sortedMarkets.length} markets shown</strong>
-                            <br><small>${event.activeMarketsCount} active, ${event.resolvedMarketsCount} resolved</small>
-                            ${hiddenMarketsCount > 0 ? `<br><small style="color: #dc3545;">${hiddenMarketsCount} hidden (0 volume)</small>` : ''}
+                            <strong>Total Markets: ${(event.activeMarketsCount || 0) + (event.resolvedMarketsCount || 0)}</strong>
+                            <br><small>${event.activeMarketsCount || 0} active, ${event.resolvedMarketsCount || 0} resolved</small>
+                            <br><small>${sortedMarkets.length} shown${hiddenMarketsCount > 0 ? `, ${hiddenMarketsCount} hidden (0 volume)` : ''}</small>
                             <div style="max-height: 200px; overflow-y: auto; margin-top: 8px;">
                                 ${marketsHtml}
                             </div>
