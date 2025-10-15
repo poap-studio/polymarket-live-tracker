@@ -17,16 +17,27 @@ class PolymarketApp {
         console.log('🚀 Starting Polymarket Tracker Application...');
         
         this.setupRealtimeCallbacks();
-        this.tracker.startScheduler();
+        
+        // Skip scheduler in serverless environment
+        if (!process.env.VERCEL && process.env.NODE_ENV !== 'production') {
+            this.tracker.startScheduler();
+        } else {
+            console.log('Serverless mode - scheduler disabled');
+        }
         
         this.startWebServer();
         
         process.on('SIGINT', () => {
-            console.log('\n📝 Saving data before exit...');
-            this.tracker.saveData().then(() => {
-                console.log('✅ Data saved. Goodbye!');
+            console.log('\n📝 Shutting down gracefully...');
+            if (!process.env.VERCEL && process.env.NODE_ENV !== 'production') {
+                this.tracker.saveData().then(() => {
+                    console.log('✅ Data saved. Goodbye!');
+                    process.exit(0);
+                });
+            } else {
+                console.log('✅ Goodbye!');
                 process.exit(0);
-            });
+            }
         });
     }
 
@@ -277,12 +288,22 @@ class PolymarketApp {
 
     async handleExport(res) {
         try {
-            const exportFile = await this.tracker.exportData();
-            res.end(JSON.stringify({
-                success: true,
-                file: exportFile,
-                message: 'Data exported successfully'
-            }, null, 2));
+            if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+                // In serverless, return the data directly instead of saving to file
+                const exportData = this.tracker.exportData();
+                res.end(JSON.stringify({
+                    success: true,
+                    data: exportData,
+                    message: 'Data exported successfully (serverless mode)'
+                }, null, 2));
+            } else {
+                const exportFile = await this.tracker.exportData();
+                res.end(JSON.stringify({
+                    success: true,
+                    file: exportFile,
+                    message: 'Data exported successfully'
+                }, null, 2));
+            }
         } catch (error) {
             res.statusCode = 500;
             res.end(JSON.stringify({ error: error.message }));

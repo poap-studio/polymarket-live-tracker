@@ -41,6 +41,12 @@ class PolymarketTracker {
 
     async initializeData() {
         try {
+            // Skip file operations in serverless environment
+            if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+                console.log('Running in serverless environment - skipping file operations');
+                return;
+            }
+            
             await fs.ensureDir(this.dataDir);
             
             if (await fs.pathExists(this.eventsFile)) {
