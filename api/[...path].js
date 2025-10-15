@@ -1,366 +1,328 @@
-const PolymarketTracker = require('../marketTracker');
-const PolymarketWinnerTracker = require('../winnerTracker');
 const url = require('url');
 const fs = require('fs');
 const path = require('path');
 
-class PolymarketApp {
-    constructor() {
-        this.tracker = new PolymarketTracker();
-        this.winnerTracker = new PolymarketWinnerTracker();
-        this.port = process.env.PORT || 3000;
-        this.sseClients = new Set();
-    }
-
-    async start() {
-        console.log('🚀 Starting Polymarket Tracker Application...');
-        this.setupRealtimeCallbacks();
-        console.log('Serverless mode - scheduler disabled');
-    }
-
-    setupRealtimeCallbacks() {
-        this.tracker.addRealtimeCallback((data) => {
-            this.broadcastToClients(data);
-        });
-    }
-
-    broadcastToClients(data) {
-        const message = `data: ${JSON.stringify(data)}\\n\\n`;
-        
-        for (const client of this.sseClients) {
-            try {
-                client.write(message);
-            } catch (error) {
-                console.log('Error sending SSE data to client:', error.message);
-                this.sseClients.delete(client);
-            }
-        }
-        
-        if (data.type === 'market_resolved') {
-            console.log(`📡 Broadcasting market resolution to ${this.sseClients.size} clients: ${data.market.question}`);
-        }
-    }
-
-    async handleRequest(req, res) {
-        const parsedUrl = url.parse(req.url, true);
-        const path = parsedUrl.pathname;
-
-        res.setHeader('Content-Type', 'application/json');
-        res.setHeader('Access-Control-Allow-Origin', '*');
-
-        try {
-            switch (path) {
-                case '/':
-                    this.serveStaticFile(res, 'public/index.html');
-                    break;
-                case '/stats':
-                    this.handleStats(res);
-                    break;
-                case '/active':
-                    this.handleActiveEvents(res, parsedUrl.query);
-                    break;
-                case '/resolved':
-                    this.handleResolvedMarkets(res, parsedUrl.query);
-                    break;
-                case '/multi-outcome':
-                    this.handleMultiOutcomeMarkets(res, parsedUrl.query);
-                    break;
-                case '/top-active':
-                    this.handleTopActive(res, parsedUrl.query);
-                    break;
-                case '/top-resolved':
-                    this.handleTopResolved(res, parsedUrl.query);
-                    break;
-                case '/export':
-                    await this.handleExport(res);
-                    break;
-                case '/update':
-                    await this.handleManualUpdate(res);
-                    break;
-                case '/events':
-                    this.handleSSE(req, res);
-                    break;
-                case '/winners':
-                    this.handleWinners(res, parsedUrl.query);
-                    break;
-                case '/winner-stats':
-                    await this.handleWinnerStats(res);
-                    break;
-                case '/track-winners':
-                    await this.handleTrackWinners(res, parsedUrl.query);
-                    break;
-                default:
-                    res.statusCode = 404;
-                    res.end(JSON.stringify({ error: 'Not found' }));
-            }
-        } catch (error) {
-            res.statusCode = 500;
-            res.end(JSON.stringify({ error: error.message }));
-        }
-    }
-
-    serveStaticFile(res, filePath) {
-        const fullPath = path.join(__dirname, '..', filePath);
-        
-        fs.readFile(fullPath, (err, content) => {
-            if (err) {
-                res.statusCode = 404;
-                res.setHeader('Content-Type', 'text/html');
-                res.end('<h1>404 Not Found</h1>');
-                return;
-            }
-            
-            const ext = path.extname(filePath);
-            let contentType = 'text/html';
-            
-            if (ext === '.css') contentType = 'text/css';
-            else if (ext === '.js') contentType = 'application/javascript';
-            else if (ext === '.json') contentType = 'application/json';
-            
-            res.setHeader('Content-Type', contentType);
-            res.end(content);
-        });
-    }
-
-    handleStats(res) {
-        const activeEvents = this.tracker.events.active.size;
-        const resolvedEvents = this.tracker.events.resolved.size;
-        
-        const activeEventsArray = Array.from(this.tracker.events.active.values());
-        const totalActiveMarkets = activeEventsArray.reduce((sum, e) => sum + e.activeMarketsCount, 0);
-        const totalResolvedMarkets = activeEventsArray.reduce((sum, e) => sum + e.resolvedMarketsCount, 0);
-        const totalActiveMultiOutcome = activeEventsArray.reduce((sum, e) => sum + e.multiOutcomeMarketsCount, 0);
-        const totalVolume = activeEventsArray.reduce((sum, e) => sum + e.totalVolume, 0);
-
-        const stats = {
-            totalEvents: activeEvents + resolvedEvents,
-            events: {
-                active: activeEvents,
-                resolved: resolvedEvents
-            },
-            markets: {
-                total: totalActiveMarkets + totalResolvedMarkets,
-                active: totalActiveMarkets,
-                resolved: totalResolvedMarkets,
-                multiOutcome: totalActiveMultiOutcome,
-                binary: totalActiveMarkets - totalActiveMultiOutcome
-            },
-            totalVolume: totalVolume,
-            lastUpdate: this.tracker.events.lastUpdate
-        };
-
-        res.end(JSON.stringify(stats, null, 2));
-    }
-
-    handleActiveEvents(res, query) {
-        const limit = parseInt(query.limit) || 10;
-        const events = Array.from(this.tracker.events.active.values())
-            .sort((a, b) => b.totalVolume - a.totalVolume)
-            .slice(0, limit);
-
-        res.end(JSON.stringify({
-            count: events.length,
-            total: this.tracker.events.active.size,
-            events
-        }, null, 2));
-    }
-
-    handleResolvedMarkets(res, query) {
-        const limit = parseInt(query.limit) || 10;
-        const markets = Array.from(this.tracker.markets.resolved.values())
-            .sort((a, b) => b.volumeUSD - a.volumeUSD)
-            .slice(0, limit);
-
-        res.end(JSON.stringify({
-            count: markets.length,
-            total: this.tracker.markets.resolved.size,
-            markets
-        }, null, 2));
-    }
-
-    handleMultiOutcomeMarkets(res, query) {
-        const type = query.type || 'active';
-        const limit = parseInt(query.limit) || 10;
-        const markets = this.tracker.getMultiOutcomeMarkets(type, limit);
-
-        res.end(JSON.stringify({
-            type,
-            count: markets.length,
-            markets
-        }, null, 2));
-    }
-
-    handleTopActive(res, query) {
-        const limit = parseInt(query.limit) || 10;
-        const markets = this.tracker.getTopMarkets('active', limit);
-
-        res.end(JSON.stringify({
-            count: markets.length,
-            markets
-        }, null, 2));
-    }
-
-    handleTopResolved(res, query) {
-        const limit = parseInt(query.limit) || 10;
-        const markets = this.tracker.getTopMarkets('resolved', limit);
-
-        res.end(JSON.stringify({
-            count: markets.length,
-            markets
-        }, null, 2));
-    }
-
-    async handleExport(res) {
-        try {
-            const exportData = this.tracker.exportData();
-            res.end(JSON.stringify({
-                success: true,
-                data: exportData,
-                message: 'Data exported successfully (serverless mode)'
-            }, null, 2));
-        } catch (error) {
-            res.statusCode = 500;
-            res.end(JSON.stringify({ error: error.message }));
-        }
-    }
-
-    async handleManualUpdate(res) {
-        try {
-            res.end(JSON.stringify({
-                success: true,
-                message: 'Manual update triggered'
-            }, null, 2));
-            
-            this.tracker.performFullUpdate();
-        } catch (error) {
-            res.statusCode = 500;
-            res.end(JSON.stringify({ error: error.message }));
-        }
-    }
-
-    handleSSE(req, res) {
-        res.writeHead(200, {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Headers': 'Cache-Control'
-        });
-
-        res.write('data: {"type":"connected","message":"SSE connection established"}\\n\\n');
-
-        this.sseClients.add(res);
-        console.log(`📡 New SSE client connected. Total clients: ${this.sseClients.size}`);
-
-        req.on('close', () => {
-            this.sseClients.delete(res);
-            console.log(`📡 SSE client disconnected. Total clients: ${this.sseClients.size}`);
-        });
-
-        req.on('error', (error) => {
-            console.log('SSE client error:', error.message);
-            this.sseClients.delete(res);
-        });
-    }
-
-    handleWinners(res, query) {
-        try {
-            const marketId = query.marketId;
-            const limit = parseInt(query.limit) || 1000;
-            
-            if (marketId) {
-                const winners = this.winnerTracker.getMarketWinners(marketId);
-                if (!winners) {
-                    res.statusCode = 404;
-                    res.end(JSON.stringify({ error: 'Market winners not found' }));
-                    return;
-                }
-                res.end(JSON.stringify(winners, null, 2));
-            } else {
-                const topWinners = this.winnerTracker.getTopWinners(limit);
-                res.end(JSON.stringify({
-                    topWinners,
-                    count: topWinners.length,
-                    limit
-                }, null, 2));
-            }
-        } catch (error) {
-            res.statusCode = 500;
-            res.end(JSON.stringify({ error: error.message }));
-        }
-    }
-
-    async handleWinnerStats(res) {
-        try {
-            const stats = await this.winnerTracker.getWinnerStats();
-            res.end(JSON.stringify(stats, null, 2));
-        } catch (error) {
-            res.statusCode = 500;
-            res.end(JSON.stringify({ error: error.message }));
-        }
-    }
-
-    async handleTrackWinners(res, query) {
-        try {
-            const marketId = query.marketId;
-            const winningOutcome = query.outcome;
-            const blockNumber = query.blockNumber ? parseInt(query.blockNumber) : null;
-            
-            if (!marketId || !winningOutcome) {
-                res.statusCode = 400;
-                res.end(JSON.stringify({ 
-                    error: 'Missing required parameters: marketId and outcome' 
-                }));
-                return;
-            }
-
-            console.log(`🎯 Triggering winner tracking for market ${marketId}, outcome: ${winningOutcome}`);
-            
-            this.winnerTracker.trackMarketWinners(marketId, winningOutcome, blockNumber)
-                .then(result => {
-                    if (result) {
-                        console.log(`✅ Winner tracking completed for market ${marketId}`);
-                    }
-                })
-                .catch(error => {
-                    console.error(`❌ Winner tracking failed for market ${marketId}:`, error);
-                });
-
-            res.end(JSON.stringify({
-                success: true,
-                message: `Winner tracking initiated for market ${marketId}`,
-                marketId,
-                winningOutcome,
-                blockNumber
-            }, null, 2));
-            
-        } catch (error) {
-            res.statusCode = 500;
-            res.end(JSON.stringify({ error: error.message }));
-        }
-    }
-}
-
-// Global app instance for serverless functions
-let globalApp = null;
-
-async function getApp() {
-    if (!globalApp) {
-        globalApp = new PolymarketApp();
-        await globalApp.start();
-    }
-    return globalApp;
-}
-
-// Serverless function handler for Vercel
+// Serverless function that proxies directly to Polymarket API
 module.exports = async (req, res) => {
     try {
-        const app = await getApp();
-        await app.handleRequest(req, res);
+        const parsedUrl = url.parse(req.url, true);
+        const pathname = parsedUrl.pathname;
+
+        // Set CORS headers
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+        if (req.method === 'OPTIONS') {
+            res.statusCode = 200;
+            res.end();
+            return;
+        }
+
+        console.log(`[${new Date().toISOString()}] ${req.method} ${pathname}`);
+
+        switch (pathname) {
+            case '/':
+                return serveStaticFile(res, 'public/index.html');
+                
+            case '/stats':
+                return await handleStats(req, res);
+                
+            case '/active':
+                return await handleActive(req, res, parsedUrl.query);
+                
+            case '/resolved':
+                return await handleResolved(req, res, parsedUrl.query);
+                
+            case '/update':
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({
+                    success: true,
+                    message: 'Data fetched fresh on each request in serverless mode',
+                    timestamp: new Date().toISOString()
+                }));
+                break;
+                
+            case '/events':
+                // Simple SSE endpoint
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                    'Access-Control-Allow-Origin': '*'
+                });
+                res.write('data: {"type":"connected","message":"Serverless SSE connected"}\n\n');
+                setTimeout(() => res.end(), 30000);
+                break;
+                
+            case '/winners':
+            case '/winner-stats':
+            case '/track-winners':
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({
+                    message: 'Winner tracking not available in serverless mode',
+                    data: []
+                }));
+                break;
+                
+            default:
+                res.statusCode = 404;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ error: 'Not found' }));
+        }
     } catch (error) {
         console.error('Serverless handler error:', error);
         res.statusCode = 500;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ error: 'Internal server error' }));
+        res.end(JSON.stringify({ 
+            error: 'Internal server error',
+            message: error.message
+        }));
     }
 };
+
+function serveStaticFile(res, filePath) {
+    const fullPath = path.join(__dirname, '..', filePath);
+    
+    fs.readFile(fullPath, (err, content) => {
+        if (err) {
+            res.statusCode = 404;
+            res.setHeader('Content-Type', 'text/html');
+            res.end('<h1>404 Not Found</h1>');
+            return;
+        }
+        
+        const ext = path.extname(filePath);
+        let contentType = 'text/html';
+        
+        if (ext === '.css') contentType = 'text/css';
+        else if (ext === '.js') contentType = 'application/javascript';
+        else if (ext === '.json') contentType = 'application/json';
+        
+        res.setHeader('Content-Type', contentType);
+        res.end(content);
+    });
+}
+
+async function makeApiRequest(endpoint, params = {}) {
+    const https = require('https');
+    const queryString = new URLSearchParams(params).toString();
+    const apiUrl = `https://gamma-api.polymarket.com${endpoint}${queryString ? `?${queryString}` : ''}`;
+    
+    return new Promise((resolve) => {
+        const request = https.get(apiUrl, (response) => {
+            let data = '';
+            
+            response.on('data', (chunk) => {
+                data += chunk;
+            });
+            
+            response.on('end', () => {
+                try {
+                    const jsonData = JSON.parse(data);
+                    resolve(jsonData);
+                } catch (parseError) {
+                    console.error('Error parsing JSON:', parseError);
+                    resolve([]);
+                }
+            });
+        });
+        
+        request.on('error', (error) => {
+            console.error(`Error fetching ${endpoint}:`, error);
+            resolve([]);
+        });
+        
+        request.setTimeout(15000, () => {
+            request.abort();
+            console.error(`Request timeout for ${endpoint}`);
+            resolve([]);
+        });
+    });
+}
+
+// Function to fetch multiple pages of events
+async function makeMultiPageApiRequest(endpoint, params = {}, maxEvents = 10000) {
+    const allEvents = [];
+    const batchSize = 500; // API maximum per request
+    const maxBatches = Math.ceil(Math.min(maxEvents, 10000) / batchSize);
+    
+    for (let i = 0; i < maxBatches; i++) {
+        const offset = i * batchSize;
+        const batchParams = {
+            ...params,
+            limit: batchSize,
+            offset: offset
+        };
+        
+        const batch = await makeApiRequest(endpoint, batchParams);
+        
+        if (!batch || batch.length === 0) {
+            break; // No more data
+        }
+        
+        allEvents.push(...batch);
+        
+        // If we got less than the batch size, we've reached the end
+        if (batch.length < batchSize) {
+            break;
+        }
+        
+        // Stop if we've reached our target
+        if (allEvents.length >= maxEvents) {
+            break;
+        }
+    }
+    
+    return allEvents.slice(0, maxEvents);
+}
+
+async function handleStats(req, res) {
+    try {
+        res.setHeader('Content-Type', 'application/json');
+        
+        // Fetch up to 10,000 active events using pagination
+        const activeEvents = await makeMultiPageApiRequest('/events', { closed: false }, 10000);
+        
+        if (!activeEvents || activeEvents.length === 0) {
+            return res.end(JSON.stringify({
+                totalEvents: 0,
+                events: { active: 0, resolved: 0 },
+                markets: { total: 0, active: 0, resolved: 0, multiOutcome: 0, binary: 0 },
+                totalVolume: 0,
+                lastUpdate: new Date().toISOString(),
+                note: 'Limited sample in serverless mode'
+            }));
+        }
+        
+        let totalVolume = 0;
+        let totalMarkets = 0;
+        
+        let resolvedMarketsTotal = 0;
+        let multiOutcomeTotal = 0;
+        
+        activeEvents.forEach(event => {
+            totalVolume += event.volume || 0;
+            const markets = event.markets || [];
+            totalMarkets += markets.length;
+            
+            const resolvedMarkets = markets.filter(m => m.active === false || m.closed === true);
+            resolvedMarketsTotal += resolvedMarkets.length;
+            
+            const multiOutcomeMarkets = markets.filter(m => {
+                const outcomes = m.outcomes;
+                if (typeof outcomes === 'string') {
+                    try {
+                        const parsed = JSON.parse(outcomes);
+                        return Array.isArray(parsed) && parsed.length > 2;
+                    } catch {
+                        return false;
+                    }
+                }
+                return Array.isArray(outcomes) && outcomes.length > 2;
+            });
+            multiOutcomeTotal += multiOutcomeMarkets.length;
+        });
+        
+        const stats = {
+            totalEvents: activeEvents.length,
+            events: {
+                active: activeEvents.length,
+                resolved: 0
+            },
+            markets: {
+                total: totalMarkets,
+                active: totalMarkets - resolvedMarketsTotal,
+                resolved: resolvedMarketsTotal,
+                multiOutcome: multiOutcomeTotal,
+                binary: totalMarkets - multiOutcomeTotal
+            },
+            totalVolume: totalVolume,
+            lastUpdate: new Date().toISOString(),
+            note: `Sample of ${activeEvents.length} events (serverless mode)`
+        };
+        
+        res.end(JSON.stringify(stats, null, 2));
+    } catch (error) {
+        console.error('Error in handleStats:', error);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+async function handleActive(req, res, query) {
+    try {
+        res.setHeader('Content-Type', 'application/json');
+        
+        const limit = Math.min(parseInt(query.limit) || 50, 10000); // Cap at 10,000
+        
+        // Fetch ALL active events first (up to 10,000) to sort by volume
+        const allEvents = await makeMultiPageApiRequest('/events', { closed: false }, 10000);
+        
+        if (!allEvents) {
+            return res.end(JSON.stringify({ count: 0, total: 0, events: [] }));
+        }
+        
+        // Process ALL events to calculate total volume
+        const processedEvents = allEvents.map(event => {
+            const markets = event.markets || [];
+            const activeMarkets = markets.filter(m => m.active === true && m.closed !== true);
+            const resolvedMarkets = markets.filter(m => m.active === false || m.closed === true);
+            const multiOutcomeMarkets = markets.filter(m => {
+                const outcomes = m.outcomes;
+                if (typeof outcomes === 'string') {
+                    try {
+                        const parsed = JSON.parse(outcomes);
+                        return Array.isArray(parsed) && parsed.length > 2;
+                    } catch {
+                        return false;
+                    }
+                }
+                return Array.isArray(outcomes) && outcomes.length > 2;
+            });
+            
+            return {
+                ...event,
+                markets: markets,
+                activeMarketsCount: activeMarkets.length,
+                resolvedMarketsCount: resolvedMarkets.length,
+                multiOutcomeMarketsCount: multiOutcomeMarkets.length,
+                totalVolume: event.volume || 0
+            };
+        });
+        
+        // Sort ALL events by total volume (descending) and take top ones
+        const sortedEvents = processedEvents
+            .sort((a, b) => b.totalVolume - a.totalVolume)
+            .slice(0, limit);
+        
+        res.end(JSON.stringify({
+            count: sortedEvents.length,
+            total: allEvents.length,
+            events: sortedEvents
+        }, null, 2));
+    } catch (error) {
+        console.error('Error in handleActive:', error);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+async function handleResolved(req, res, query) {
+    try {
+        res.setHeader('Content-Type', 'application/json');
+        
+        const limit = Math.min(parseInt(query.limit) || 10, 50);
+        const events = await makeApiRequest('/events', { limit, closed: true });
+        
+        res.end(JSON.stringify({
+            count: events?.length || 0,
+            total: events?.length || 0,
+            markets: events || []
+        }, null, 2));
+    } catch (error) {
+        console.error('Error in handleResolved:', error);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
